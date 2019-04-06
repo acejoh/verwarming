@@ -11,7 +11,6 @@
 //#include <DallasTemperature.h>
 #include <DS3232RTC.h>      // https://github.com/JChristensen/DS3232RTC
 #include <LowPower.h>
-#include <PinChangeInterrupt.h>
 #include <Time.h>
 #include <TimeZone.h>
 
@@ -29,7 +28,7 @@ Adafruit_AM2315 sensor;
 // switch state pin should be from one port for pin change interrupts
 // Each pin row (0-7, 8-13, A0-A5) represents a port.
 const int PIN_SWITCH_OFF = 8;
-const int PIN_SWITCH_ON = 9;
+const int PIN_SWITCH_START = 9;
 const int PIN_SWITCH_AUTO = 10;
 
 const unsigned long DEBOUNCE_DELAY = 50;
@@ -61,9 +60,9 @@ void setup() {
     Serial.println("RTC has set the system time");
 
   // init pins
-  pinMode(PIN_SWITCH_OFF, INPUT);
-  pinMode(PIN_SWITCH_ON, INPUT);
-  pinMode(PIN_SWITCH_AUTO, INPUT);
+//  pinMode(PIN_SWITCH_OFF, INPUT);
+  pinMode(PIN_SWITCH_START, INPUT_PULLUP);
+  pinMode(PIN_SWITCH_AUTO, INPUT_PULLUP);
 
   pinMode(LED_BUILTIN, OUTPUT);
 
@@ -71,9 +70,15 @@ void setup() {
   lastSwitchState = switchState;
   handleSwitchState(switchState);
 
+  RTC.setAlarm(ALARM_TYPES_t, minutes, hours, daydate)
+
 }
 
 void loop() {
+
+  delay(100);
+  LowPower.powerDown(SLEEP_4S, ADC_OFF, BOD_OFF);
+
   float humidity;
   float temperature;
   //sensors.requestTemperatures(); // Send the command to get temperatures
@@ -85,34 +90,53 @@ void loop() {
     temperature = 0;
   }
 
-  //Serial.print("Hum: "); Serial.println(humidity);
-  //Serial.print("Temp: "); Serial.println(temperature);
+  Serial.print("Hum: "); Serial.println(humidity);
+  Serial.print("Temp: "); Serial.println(temperature);
 
   int reading = getSwitchState();
   if (reading != lastSwitchState) {
     Serial.println("Debounce start");
     debounceTimer = millis();
+    while (millis() > debounceTimer + DEBOUNCE_DELAY);
+    reading = getSwitchState();
   }
 
-  if (millis() > debounceTimer + DEBOUNCE_DELAY
-      && reading != switchState) {
+  if (reading != switchState) {
     Serial.println("Switching state");
     handleSwitchState(reading);
     switchState = reading;
   }
-
   lastSwitchState = reading;
 
-  //LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF);
+  // relay logic
+  bool startHeater = setHeaterState(humidity, temperature);
+  if (startHeater)
+	  digitalWrite(LED_BUILTIN, HIGH);
+  else
+	  digitalWrite(LED_BUILTIN, LOW);
+}
+
+bool setHeaterState(float humidity, float temperature) {
+
+	bool heaterState = false;
+
+	switch (switchState) {
+	case PIN_SWITCH_AUTO:
+
+
+
+	}
+
+	return heaterState;
 }
 
 int getSwitchState() {
   int switchState;
   //Get starting switch state
-  if (digitalRead(PIN_SWITCH_ON) == HIGH) {
-    switchState = PIN_SWITCH_ON;
+  if (digitalRead(PIN_SWITCH_START) == LOW && digitalRead(PIN_SWITCH_AUTO) == LOW) {
+    switchState = PIN_SWITCH_START;
   }
-  else if (digitalRead(PIN_SWITCH_AUTO) == HIGH) {
+  else if (digitalRead(PIN_SWITCH_START) == LOW) {
     switchState = PIN_SWITCH_AUTO;
   }
   else {
@@ -124,21 +148,14 @@ int getSwitchState() {
 void handleSwitchState(int switchState) {
 
   switch (switchState) {
-    case PIN_SWITCH_ON:
-      Serial.println("State=ON");
-      digitalWrite(LED_BUILTIN, HIGH);
-      digitalWrite(PIN_SWITCH_OFF, LOW);
+    case PIN_SWITCH_START:
+      Serial.println("State=START");
       break;
     case PIN_SWITCH_AUTO:
       Serial.println("State=AUTO");
-      digitalWrite(LED_BUILTIN, HIGH);
-      digitalWrite(PIN_SWITCH_OFF, LOW);
       break;
     default:
       Serial.println("State=OFF");
-      digitalWrite(LED_BUILTIN, LOW);
-      digitalWrite(PIN_SWITCH_OFF, HIGH);
-      break;
   }
 
 }
