@@ -9,11 +9,15 @@
 #include <DS3232RTC.h>      // https://github.com/JChristensen/DS3232RTC
 #include <Time.h>
 #include <TimeZone.h>
+#include <math.h>
 
 Adafruit_AM2315 sensor;
 
 const int PIN_RELAY = 8;
 const int PIN_SWITCH_OFF = 1; // not used
+// switch #3 = pin 9
+// switch #2 = GND = switch #4
+// switch #1 = pin 10
 const int PIN_SWITCH_START = 9;
 const int PIN_SWITCH_AUTO = 10;
 
@@ -50,31 +54,28 @@ bool isDownTime = false;
 bool hasStarted = false;
 bool hasDownTimePassed = false;
 
-const float MIN_TEMP_OFF = 5;
+const float MIN_TEMP_OFF = -999;
 const float MAX_HUM_OFF = 999;
-const float MIN_TEMP_AUTO = 26;
+const float MIN_TEMP_AUTO = 10;
 const float MAX_HUM_AUTO = 999;
-const float MAX_TEMP_START = 30;
+const float MAX_TEMP_START = 20;
 
 unsigned long debugLogTimer;
+int errorCode = 0;
+const int ERROR_SENSOR = 1;
+const int ERROR_RTC = 2;
+const int ERROR_NAN = 3;
+const int ERROR_NAN_COUNT = 99;
+unsigned long debugLedTimer;
+const int LED_CYCLE_MS_NORMAL = 250;
+const int LED_CYCLE_MS_NAN = 0;
+
+const int HOUR_LED_ON_1 = 21;
+const int HOUR_LED_ON_2 = 6;
 
 void setup() {
 	Serial.begin(9600);
 	Serial.println("Verwarming Test!");
-
-	// Start up the sensor
-	if (!sensor.begin()) {
-		Serial.println("Sensor not found, check wiring & pullups!");
-	}
-
-	// set the time
-	RTC.set(compileTime());	// COMMENT THIS LINE ONCE IN PRODUCTION
-	setSyncProvider(RTC.get);   // the function to get the time from the RTC
-	if (timeStatus() != timeSet)
-		Serial.println("Unable to sync with the RTC");
-	else
-		Serial.println("RTC has set the system time");
-	printDateTime(now());
 
 	// init pins
 	pinMode(PIN_SWITCH_START, INPUT_PULLUP);
@@ -86,6 +87,22 @@ void setup() {
 	digitalWrite(LED_BUILTIN, LOW);
 	pinMode(LED_BUILTIN, OUTPUT);
 
+	// Start up the sensor
+	if (!sensor.begin()) {
+		errorCode = ERROR_SENSOR;
+		Serial.println("Sensor not found, check wiring & pullups!");
+	}
+
+	// set the time
+	RTC.set(compileTime());	// COMMENT THIS LINE ONCE IN PRODUCTION
+	setSyncProvider(RTC.get);   // the function to get the time from the RTC
+	if (timeStatus() != timeSet) {
+		errorCode = ERROR_RTC;
+		Serial.println("Unable to sync with the RTC");
+	} else
+		Serial.println("RTC has set the system time");
+	printDateTime(now());
+
 	// get initial state
 	switchState = getSwitchState();
 	heaterState = setHeaterState(switchState);
@@ -96,8 +113,18 @@ void setup() {
 
 void loop() {
 
-	float humidity = sensor.readHumidity();
-	float temperature = sensor.readTemperature();
+	int readCount = 0;
+	float humidity = NAN;
+	float temperature = NAN;
+	while (isnan(temperature) && readCount <= ERROR_NAN_COUNT) {
+		humidity = sensor.readHumidity();
+		temperature = sensor.readTemperature();
+		readCount++;
+	}
+	if (readCount > ERROR_NAN_COUNT)
+		// too many read attempts -> probable sensor fault
+		errorCode = ERROR_NAN;
+
 	if (millis() - 5000 > debugLogTimer) {
 		//Serial.print("Hum: ");
 		//Serial.println(humidity);
@@ -117,7 +144,7 @@ void loop() {
 		time_t running = now() - heaterStateStart;
 		Serial.print(minute(running));
 		Serial.print(':');
-		Serial.println(second(now() - heaterStateStart));
+		Serial.println(second(running));
 
 		debugLogTimer = millis();
 	}
@@ -156,6 +183,13 @@ void loop() {
 		heaterStateStart = now();
 	}
 
+	// debug led
+	if (hour(now()) < HOUR_LED_ON_1 &&
+			hour(now()) > HOUR_LED_ON_2)
+		handleDebugLed();
+
+	handleErrorCode();
+
 }
 
 bool getStartHeater(int state, float humidity, float temperature) {
@@ -174,6 +208,7 @@ bool getStartHeater(int state, float humidity, float temperature) {
 		hasDownTimePassed = false;
 		break;
 	case HEATER_STATE_ON:
+		hasDownTimePassed = false;
 		upTime = UP_TIME_SECONDS_ON;
 		break;
 	default:
@@ -204,7 +239,8 @@ bool getStartHeater(int state, float humidity, float temperature) {
 	if (isDownTime && !hasDownTimePassed)
 		return false;
 
-	// keep heater going once started
+	// keep heater going once started, even if temp/hum falls below required values
+	// = avoid hysteresis
 	if (hasStarted)
 		return true;
 
@@ -270,12 +306,11 @@ int setHeaterState(int newSwitchState) {
 			// ignore switch from START to AUTO due to spring-loaded switch
 			Serial.println("Delayed heater state");
 			newHeaterState = HEATER_STATE_ON;
-			isDownTime = true;
 		} else {
 			newHeaterState = HEATER_STATE_AUTO;
 			heaterStateStart = now();
+			isDownTime = true;	// do not start heater at once
 		}
-		isDownTime = true;
 		break;
 	default:
 		Serial.println("Pin state=OFF");
@@ -350,4 +385,37 @@ int addSwitchDelay(int state) {
 	}
 	return delay;
 
+}
+
+void handleDebugLed() {
+
+	int state = LOW;
+
+	switch (errorCode) {
+	case ERROR_NAN:
+	case ERROR_RTC:
+	case ERROR_SENSOR:
+		// blink led in case of error
+		if (second(now() % 2 == 0))
+			state = HIGH;
+		break;
+	default:
+		// led is on first minute of every hour
+		if (minute(now()) == 0)
+			state = HIGH;
+	}
+
+	digitalWrite(LED_BUILTIN, state);
+
+}
+
+void handleErrorCode() {
+//	switch (errorCode) {
+//	case ERROR_NAN:
+//
+//	case ERROR_RTC:
+//
+//	case ERROR_SENSOR:
+//		if (
+//	}
 }
