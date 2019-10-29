@@ -11,6 +11,7 @@
 #include <TimeZone.h>
 #include <math.h>
 #include <advancedSerial.h>
+#include <LowPower.h>
 
 Adafruit_AM2315 sensor;
 
@@ -138,10 +139,12 @@ void setup() {
 	heaterState = setHeaterState(switchState);
 
 	aSerial.v().println("Setup is done");
-	delay(1000);
 }
 
 void loop() {
+
+	LowPower.idle(SLEEP_1S, ADC_ON, TIMER2_ON, TIMER1_ON, TIMER0_ON,
+	                SPI_ON, USART0_ON, TWI_ON);
 
 	numLoops++;
 	// get temperature & humidity from sensor
