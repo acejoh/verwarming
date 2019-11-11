@@ -11,7 +11,6 @@
 #include <TimeZone.h>
 #include <math.h>
 #include <advancedSerial.h>
-#include <LowPower.h>
 
 Adafruit_AM2315 sensor;
 
@@ -19,13 +18,13 @@ Adafruit_AM2315 sensor;
 // PIN numbers & states
 const int PIN_LED = 7;
 const int PIN_RELAY = 8;
-const int PIN_SWITCH_OFF = 1; // not used
 
 // switch #3 = pin 9
 // switch #2 = GND = switch #4 (=GND)
 // switch #1 = pin 10
 const int PIN_SWITCH_START = 9;
 const int PIN_SWITCH_AUTO = 10;
+const int PIN_SWITCH_OFF = 1; // not used
 
 const int HEATER_STATE_OFF = 0;
 const int HEATER_STATE_ON = 1;
@@ -44,7 +43,7 @@ const int DAL_UUR_END = 6;
 // temperature and humidity settings
 const float MIN_TEMP_OFF = 1;
 const float MAX_HUM_OFF = 999;
-const float MIN_TEMP_AUTO = 20;
+const float MIN_TEMP_AUTO = 10;
 const float MAX_HUM_AUTO = 999;
 const float MAX_TEMP_START = 20;
 
@@ -55,22 +54,26 @@ const unsigned long DEBOUNCE_DELAY_AUTO = 750;
 const unsigned long DEBOUNCE_DELAY_OFF = 750;
 
 const int DELAY_START_SECONDS = 1;
-const int DOWN_TIME_SECONDS_OFF = 30; //60 * 60;
-const int DOWN_TIME_SECONDS_AUTO = 30; //60 * 60;
-const int UP_TIME_SECONDS_OFF = 1 * 60;
-const int UP_TIME_SECONDS_AUTO = 3 * 60;
-const int UP_TIME_SECONDS_ON = 1 * 60;
+const int DOWN_TIME_SECONDS_OFF = 30 * 60;
+const int DOWN_TIME_SECONDS_AUTO = 30 * 60;
+const int UP_TIME_SECONDS_OFF = 30 * 60;
+const int UP_TIME_SECONDS_AUTO = 30 * 60;
+const int UP_TIME_SECONDS_ON = 10 * 60;
+
+// smoothing constants
+const int NUM_READINGS = 600;
 
 // debug led constants
 const int ERROR_SENSOR = 1;
 const int ERROR_RTC = 2;
 const int ERROR_NAN = 3;
 const int ERROR_NAN_COUNT = 99;
+const int ERROR_STATE = 4;
 
 const int LED_CYCLE_MS_NORMAL = 250;
 const int LED_CYCLE_MS_NAN = 0;
 
-const int HOUR_LED_ON_1 = 21;
+const int HOUR_LED_ON_1 = 23;
 const int HOUR_LED_ON_2 = 6;
 
 // debug logging constants
@@ -80,6 +83,7 @@ const int DEBUG_LEVEL_FULL = 2;
 
 // set the current logging level
 const int CURRENT_LOG_LEVEL = DEBUG_LEVEL_FULL;
+
 
 // variables
 unsigned long debounceTimer;
@@ -92,12 +96,19 @@ bool isDownTime = false;
 bool hasStarted = false;
 bool hasDownTimePassed = false;
 
+unsigned long readSensorTimer;
+float temperature = MIN_TEMP_AUTO + 1;
+float humidity = 0;
+
+float tempSmoothingArray[NUM_READINGS];
+unsigned int currentIndex;
+float total;
+float average;
+
 unsigned long debugLogTimer;
 int errorCode = 0;
 unsigned long debugLedTimer;
 
-int numReads = 0;
-int numLoops = 0;
 
 void setup() {
 	// init pins
@@ -126,7 +137,7 @@ void setup() {
 	}
 
 	// set/get the RTC time
-	RTC.set(compileTime());	// COMMENT THIS LINE ONCE IN PRODUCTION
+	//RTC.set(compileTime());	// COMMENT THIS LINE ONCE IN PRODUCTION
 	setSyncProvider(RTC.get);   // the function to get the time from the RTC
 	if (timeStatus() != timeSet) {
 		errorCode = ERROR_RTC;
@@ -143,37 +154,37 @@ void setup() {
 
 void loop() {
 
-	LowPower.idle(SLEEP_1S, ADC_ON, TIMER2_ON, TIMER1_ON, TIMER0_ON,
-	                SPI_ON, USART0_ON, TWI_ON);
-
-	numLoops++;
 	// get temperature & humidity from sensor
-	int readCount = 0;
-	float humidity = NAN;
-	float temperature = NAN;
-	while (isnan(temperature) && readCount <= ERROR_NAN_COUNT) {
-		resetErrorCode(ERROR_NAN);
-		humidity = sensor.readHumidity();
-		temperature = sensor.readTemperature();
-		readCount++;
+	//  update frequency = .5hz
+	if (millis() > 2000 + readSensorTimer) {
+		temperature = readTemperature();
+		humidity = readHumidity();
+
+		readSensorTimer = millis();
 	}
-	if (readCount >= ERROR_NAN_COUNT) {
-		// too many read attempts -> probable sensor fault
-		aSerial.v().println("Error: failed to read sensor");
-		errorCode = ERROR_NAN;
-		// disable AUTO on
-		temperature = MIN_TEMP_AUTO + 1;
-		humidity = 0;
-	}
-	numReads += readCount;
 
 	// debug log
 	if (millis() > 5000 + debugLogTimer) {
 		printDateTime(now());
+		if (isNowDalUur())
+			aSerial.vvv().println("Daluur");
 
 		aSerial.vvv().print("Temp: ").println(temperature);
 
-		aSerial.vvv().print("Current state: ").println(heaterState);
+		aSerial.vvv().print("Current heater state: ");
+		switch(heaterState) {
+		case HEATER_STATE_AUTO:
+			aSerial.vvv().println("AUTO");
+			break;
+		case HEATER_STATE_OFF:
+			aSerial.vvv().println("OFF");
+			break;
+		case HEATER_STATE_ON:
+			aSerial.vvv().println("ON");
+			break;
+		default:
+			aSerial.vvv().println("UNDEFINED");
+		}
 
 		aSerial.vvv().print("Current cycle: ");
 		if (isDownTime)
@@ -184,18 +195,11 @@ void loop() {
 		time_t running = now() - heaterStateStart;
 		aSerial.vvv().print(" - runtime: ").print(minute(running)).print(':').println(
 				second(running));
+		aSerial.vvv().println();
 
-		if (numLoops > 0) {
-			aSerial.vvv().print("Num reads since last print: ").println(
-					numReads);
-			aSerial.vvv().print("Avg read count: ").println(
-					numReads / numLoops);
-		}
-
-		numReads = 0;
-		numLoops = 0;
 		debugLogTimer = millis();
 	}
+
 
 	// check for switch state changes
 	// 1. Debounce
@@ -228,6 +232,7 @@ void loop() {
 
 	if (hasStarted != startHeater) {
 		aSerial.vvv().println("Heater state change");
+		aSerial.vvv().print("Current temp: ").println(temperature);
 		hasStarted = startHeater;
 		heaterStateStart = now();
 	}
@@ -236,12 +241,9 @@ void loop() {
 	if (hour() < HOUR_LED_ON_1 && hour() > HOUR_LED_ON_2)
 		handleDebugLed();
 
-	handleErrorCode();
-
 }
 
 bool getStartHeater(int state, float humidity, float temperature) {
-
 	bool start = false;
 
 	int upTime = 0;
@@ -249,19 +251,20 @@ bool getStartHeater(int state, float humidity, float temperature) {
 
 	// set parameters depending on state
 	switch (state) {
-	case HEATER_STATE_OFF:
+	case HEATER_STATE_ON:
+		hasDownTimePassed = false;
+		upTime = UP_TIME_SECONDS_ON;
+		break;
+	case HEATER_STATE_AUTO:
+		upTime = UP_TIME_SECONDS_AUTO;
+		downTime = DOWN_TIME_SECONDS_AUTO;
+		break;
+	default:
 		upTime = UP_TIME_SECONDS_OFF;
 		downTime = DOWN_TIME_SECONDS_OFF;
 		hasStarted = false;
 		hasDownTimePassed = false;
 		break;
-	case HEATER_STATE_ON:
-		hasDownTimePassed = false;
-		upTime = UP_TIME_SECONDS_ON;
-		break;
-	default:
-		upTime = UP_TIME_SECONDS_AUTO;
-		downTime = DOWN_TIME_SECONDS_AUTO;
 	}
 
 	// heater should not run constantly ->
@@ -287,7 +290,7 @@ bool getStartHeater(int state, float humidity, float temperature) {
 	if (isDownTime && !hasDownTimePassed)
 		return false;
 
-	// keep heater going once started, even if temp/hum falls below required values
+	// keep heater going once started, even if temp rises above required values
 	// = avoid hysteresis
 	if (hasStarted)
 		return true;
@@ -299,11 +302,12 @@ bool getStartHeater(int state, float humidity, float temperature) {
 
 	case HEATER_STATE_AUTO:
 		start = ((temperature < MIN_TEMP_AUTO || humidity > MAX_HUM_AUTO)
-				&& isNowDalUur());
+				&& isNowDalUur()) ||
+				(temperature < MIN_TEMP_OFF || humidity > MAX_HUM_OFF);
 		break;
 
 	default:
-		start = (temperature < MIN_TEMP_OFF || humidity > MAX_HUM_OFF);
+		start = false;
 
 	}
 
@@ -338,9 +342,7 @@ int getSwitchState() {
 
 // Set heater state based on switch
 int setHeaterState(int newSwitchState) {
-
 	int newHeaterState = 0;
-	//delayedAuto = false;
 	switch (newSwitchState) {
 	case PIN_SWITCH_START:
 		aSerial.vvv().println("Pin state=START");
@@ -348,6 +350,7 @@ int setHeaterState(int newSwitchState) {
 		heaterStateStart = now();
 		isDownTime = false;
 		break;
+
 	case PIN_SWITCH_AUTO:
 		aSerial.vvv().println("Pin state=AUTO");
 		if (switchState == PIN_SWITCH_START) {
@@ -360,14 +363,15 @@ int setHeaterState(int newSwitchState) {
 			isDownTime = true;	// do not start heater at once
 		}
 		break;
+
 	default:
 		aSerial.vvv().println("Pin state=OFF");
 		newHeaterState = HEATER_STATE_OFF;
 		heaterStateStart = now();
 		isDownTime = true;
 	}
-	return newHeaterState;
 
+	return newHeaterState;
 }
 
 // https://www.engie-electrabel.be/nl/support/faq/energie/meters/daltarief
@@ -376,8 +380,10 @@ bool isNowDalUur() {
 	TimeChangeRule *tcr;
 	time_t t = CE.toLocal(now(), &tcr);
 
-	return ((dayOfWeek(t) == SATURDAY || dayOfWeek(t) == SUNDAY)
-			|| (hour(t) >= DAL_UUR_START && hour(t) < DAL_UUR_END));
+//	return ((dayOfWeek(t) == SATURDAY || dayOfWeek(t) == SUNDAY)
+//			|| (hour(t) >= DAL_UUR_START && hour(t) < DAL_UUR_END));
+
+	return (hour(t) >= DAL_UUR_START || hour(t) < DAL_UUR_END);
 
 }
 
@@ -421,7 +427,6 @@ time_t compileTime() {
 }
 
 int addSwitchDelay(int state) {
-
 	int delay = 0;
 	switch (state) {
 	case PIN_SWITCH_START:
@@ -434,7 +439,52 @@ int addSwitchDelay(int state) {
 		delay = DEBOUNCE_DELAY_OFF;
 	}
 	return delay;
+}
 
+float readTemperature() {
+	int readCount = 0;
+	float temperature = NAN;
+
+	while (isnan(temperature) && readCount <= ERROR_NAN_COUNT) {
+		temperature = sensor.readTemperature();
+		readCount++;
+	}
+	if (readCount >= ERROR_NAN_COUNT) {
+		// too many read attempts -> probable sensor fault
+		aSerial.v().println("Error: failed to read temperature");
+		errorCode = ERROR_NAN;
+		// disable AUTO on
+		return MIN_TEMP_AUTO + 1;
+	}
+	// read OK
+	resetErrorCode(ERROR_NAN);
+	return temperature;
+}
+
+float readHumidity() {
+	return 0;
+}
+
+float getSmoothTemp(float temp) {
+	static float tempArray[NUM_READINGS];
+	static int currentIndex;
+	static float total;
+	static bool completed = false;
+
+	total -= tempArray[currentIndex];
+	tempArray[currentIndex] = temp;
+	total += tempArray[currentIndex];
+
+	currentIndex++;
+	if (currentIndex > NUM_READINGS) {
+		completed = true;
+		currentIndex = 0;
+	}
+
+	if (completed)
+		return total / NUM_READINGS;
+
+	return total / currentIndex;
 }
 
 void resetErrorCode(const int errorToReset) {
@@ -443,13 +493,13 @@ void resetErrorCode(const int errorToReset) {
 }
 
 void handleDebugLed() {
-
 	int state = LOW;
 
 	switch (errorCode) {
 	case ERROR_NAN:
 	case ERROR_RTC:
-	case ERROR_SENSOR: {
+	case ERROR_SENSOR:
+	case ERROR_STATE: {
 		// blink led in case of error
 		int even = second() % 2;
 		if (even == 0 && millis() > debugLedTimer + 250) {
@@ -467,16 +517,4 @@ void handleDebugLed() {
 	}
 
 	digitalWrite(PIN_LED, state);
-
-}
-
-void handleErrorCode() {
-//	switch (errorCode) {
-//	case ERROR_NAN:
-//
-//	case ERROR_RTC:
-//
-//	case ERROR_SENSOR:
-//		if (
-//	}
 }
