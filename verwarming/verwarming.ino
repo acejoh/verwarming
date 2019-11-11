@@ -383,7 +383,7 @@ bool isNowDalUur() {
 //	return ((dayOfWeek(t) == SATURDAY || dayOfWeek(t) == SUNDAY)
 //			|| (hour(t) >= DAL_UUR_START && hour(t) < DAL_UUR_END));
 
-	return (hour(t) >= DAL_UUR_START || hour(t) < DAL_UUR_END);
+	return (hour(t) >= DAL_UUR_START || hour(t + UP_TIME_SECONDS_AUTO) < DAL_UUR_END);
 
 }
 
