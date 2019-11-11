@@ -9,7 +9,6 @@
 #include <DS3232RTC.h>      // https://github.com/JChristensen/DS3232RTC
 #include <Time.h>
 #include <TimeZone.h>
-#include <math.h>
 #include <advancedSerial.h>
 
 Adafruit_AM2315 sensor;
