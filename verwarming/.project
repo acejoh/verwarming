@@ -47,6 +47,11 @@
 			<location>C:/Users/jhei/Documents/Arduino/libraries/Adafruit_AM2315-master</location>
 		</link>
 		<link>
+			<name>libraries/Arduino-MemoryFree-master</name>
+			<type>2</type>
+			<location>C:/Users/jhei/Documents/Arduino/libraries/Arduino-MemoryFree-master</location>
+		</link>
+		<link>
 			<name>libraries/DS3232RTC-master</name>
 			<type>2</type>
 			<location>C:/Users/jhei/Documents/Arduino/libraries/DS3232RTC-master</location>

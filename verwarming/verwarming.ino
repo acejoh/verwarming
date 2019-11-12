@@ -10,6 +10,7 @@
 #include <Time.h>
 #include <TimeZone.h>
 #include <advancedSerial.h>
+#include <MemoryFree.h>
 
 Adafruit_AM2315 sensor;
 
@@ -47,12 +48,11 @@ const float MAX_HUM_AUTO = 999;
 const float MAX_TEMP_START = 20;
 
 // switch debounce and state constants
-const unsigned long DEBOUNCE_DELAY = 50;
-const unsigned long DEBOUNCE_DELAY_START = 400;
-const unsigned long DEBOUNCE_DELAY_AUTO = 750;
-const unsigned long DEBOUNCE_DELAY_OFF = 750;
+const unsigned int DEBOUNCE_DELAY = 50;
+const unsigned int DEBOUNCE_DELAY_START = 400;
+const unsigned int DEBOUNCE_DELAY_AUTO = 750;
+const unsigned int DEBOUNCE_DELAY_OFF = 750;
 
-const int DELAY_START_SECONDS = 1;
 const int DOWN_TIME_SECONDS_OFF = 30 * 60;
 const int DOWN_TIME_SECONDS_AUTO = 30 * 60;
 const int UP_TIME_SECONDS_OFF = 30 * 60;
@@ -69,24 +69,11 @@ const int ERROR_NAN = 3;
 const int ERROR_NAN_COUNT = 99;
 const int ERROR_STATE = 4;
 
-const int LED_CYCLE_MS_NORMAL = 250;
-const int LED_CYCLE_MS_NAN = 0;
-
-const int HOUR_LED_ON_1 = 23;
-const int HOUR_LED_ON_2 = 6;
-
-// debug logging constants
-const int DEBUG_LEVEL_OFF = 0;
-const int DEBUG_LEVEL_BASIC = 1;
-const int DEBUG_LEVEL_FULL = 2;
-
-// set the current logging level
-const int CURRENT_LOG_LEVEL = DEBUG_LEVEL_FULL;
+const int HOUR_LED_ON_UNTIL = 23;
+const int HOUR_LED_ON_FROM = 6;
 
 
 // variables
-unsigned long debounceTimer;
-
 int switchState;
 int heaterState;
 
@@ -95,7 +82,7 @@ bool isDownTime = false;
 bool hasStarted = false;
 bool hasDownTimePassed = false;
 
-unsigned long readSensorTimer;
+unsigned long readSensorStart;
 float temperature = MIN_TEMP_AUTO + 1;
 float humidity = 0;
 
@@ -104,9 +91,9 @@ unsigned int currentIndex;
 float total;
 float average;
 
-unsigned long debugLogTimer;
+unsigned long debugLogStart;
 int errorCode = 0;
-unsigned long debugLedTimer;
+unsigned long debugLedStart;
 
 
 void setup() {
@@ -123,16 +110,16 @@ void setup() {
 	Serial.begin(9600);
 	aSerial.setPrinter(Serial);
 	aSerial.setFilter(Level::vvv);
-	/* Uncomment the following line to disable the output. By defalut the ouput is on. */
+	/* Uncomment the following line to disable the output. By default the ouput is on. */
 	// aSerial.off();
 
-	aSerial.v().println("Verwarming start");
-	aSerial.v().println("=================");
+	aSerial.v().println(F("Verwarming start"));
+	aSerial.v().println(F("================"));
 
 	// Start the temperature sensor
 	if (!sensor.begin()) {
 		errorCode = ERROR_SENSOR;
-		aSerial.v().println("Error: Sensor not found, check wiring & pullups");
+		aSerial.v().println(F("Error: Sensor not found, check wiring & pullups"));
 	}
 
 	// set/get the RTC time
@@ -140,7 +127,7 @@ void setup() {
 	setSyncProvider(RTC.get);   // the function to get the time from the RTC
 	if (timeStatus() != timeSet) {
 		errorCode = ERROR_RTC;
-		aSerial.v().println("Error: failed to sync with RTC");
+		aSerial.v().println(F("Error: failed to sync with RTC"));
 	}
 	printDateTime(now());
 
@@ -148,55 +135,57 @@ void setup() {
 	switchState = getSwitchState();
 	heaterState = setHeaterState(switchState);
 
-	aSerial.v().println("Setup is done");
+	aSerial.v().println(F("Setup is done"));
 }
 
 void loop() {
 
 	// get temperature & humidity from sensor
 	//  update frequency = .5hz
-	if (millis() > 2000 + readSensorTimer) {
+	if (millis() - readSensorStart > 2000) {
 		temperature = readTemperature();
 		humidity = readHumidity();
 
-		readSensorTimer = millis();
+		readSensorStart = millis();
 	}
 
 	// debug log
-	if (millis() > 5000 + debugLogTimer) {
+	if (millis() - debugLogStart > 5000) {
 		printDateTime(now());
 		if (isNowDalUur())
-			aSerial.vvv().println("Daluur");
+			aSerial.vvv().println(F("Daluur"));
 
-		aSerial.vvv().print("Temp: ").println(temperature);
+		aSerial.vvv().print(F("Temp: ")).println(temperature);
 
-		aSerial.vvv().print("Current heater state: ");
+		aSerial.vvv().print(F("Current heater state: "));
 		switch(heaterState) {
 		case HEATER_STATE_AUTO:
-			aSerial.vvv().println("AUTO");
+			aSerial.vvv().println(F("AUTO"));
 			break;
 		case HEATER_STATE_OFF:
-			aSerial.vvv().println("OFF");
+			aSerial.vvv().println(F("OFF"));
 			break;
 		case HEATER_STATE_ON:
-			aSerial.vvv().println("ON");
+			aSerial.vvv().println(F("ON"));
 			break;
 		default:
-			aSerial.vvv().println("UNDEFINED");
+			aSerial.vvv().println(F("UNDEFINED"));
 		}
 
-		aSerial.vvv().print("Current cycle: ");
+		aSerial.vvv().print(F("Current cycle: "));
 		if (isDownTime)
-			aSerial.vvv().println("DOWN");
+			aSerial.vvv().println(F("DOWN"));
 		else
-			aSerial.vvv().println("UP");
+			aSerial.vvv().println(F("UP"));
 
 		time_t running = now() - heaterStateStart;
-		aSerial.vvv().print(" - runtime: ").print(minute(running)).print(':').println(
+		aSerial.vvv().print(F(" - runtime: ")).print(minute(running)).print(':').println(
 				second(running));
-		aSerial.vvv().println();
 
-		debugLogTimer = millis();
+		aSerial.vvv().print(F("Free RAM: ")).println(freeMemory());
+
+		aSerial.vvv().println();
+		debugLogStart = millis();
 	}
 
 
@@ -205,10 +194,10 @@ void loop() {
 	int reading = getSwitchState();
 	if (reading != switchState) {
 		// debounce switch
-		aSerial.vvv().println("Debounce start");
-		debounceTimer = millis();
-		debounceTimer += addSwitchDelay(reading);
-		while (millis() < debounceTimer + DEBOUNCE_DELAY)
+		aSerial.vvv().println(F("Debounce start"));
+		unsigned long debounceStart = millis();
+		unsigned int debounceDelay = DEBOUNCE_DELAY + addSwitchDelay(reading);
+		while (millis() - debounceStart < debounceDelay)
 			;
 		reading = getSwitchState();
 	}
@@ -216,7 +205,7 @@ void loop() {
 	// 2. perform state change
 	if (reading != switchState) {
 		// switch to new state
-		aSerial.vvv().println("Switching state");
+		aSerial.vvv().println(F("Switching state"));
 		heaterState = setHeaterState(reading);
 		switchState = reading;
 	}
@@ -230,14 +219,14 @@ void loop() {
 		digitalWrite(PIN_RELAY, LOW);
 
 	if (hasStarted != startHeater) {
-		aSerial.vvv().println("Heater state change");
-		aSerial.vvv().print("Current temp: ").println(temperature);
+		aSerial.vvv().println(F("Heater state change"));
+		aSerial.vvv().print(F("Current temp: ")).println(temperature);
 		hasStarted = startHeater;
 		heaterStateStart = now();
 	}
 
 	// debug led
-	if (hour() < HOUR_LED_ON_1 && hour() > HOUR_LED_ON_2)
+	if (hour() < HOUR_LED_ON_UNTIL && hour() > HOUR_LED_ON_FROM)
 		handleDebugLed();
 
 }
@@ -254,30 +243,31 @@ bool getStartHeater(int state, float humidity, float temperature) {
 		hasDownTimePassed = false;
 		upTime = UP_TIME_SECONDS_ON;
 		break;
+
 	case HEATER_STATE_AUTO:
 		upTime = UP_TIME_SECONDS_AUTO;
 		downTime = DOWN_TIME_SECONDS_AUTO;
 		break;
+
 	default:
 		upTime = UP_TIME_SECONDS_OFF;
 		downTime = DOWN_TIME_SECONDS_OFF;
 		hasStarted = false;
 		hasDownTimePassed = false;
-		break;
 	}
 
 	// heater should not run constantly ->
 	//  for every x seconds it runs it should stop y seconds
 	if (isDownTime && isTimeToSwitchState(heaterStateStart, downTime)) {
-		aSerial.vvv().println("Up time...");
+		aSerial.vvv().println(F("Up time..."));
 		isDownTime = false;
 		hasDownTimePassed = true;
 		heaterStateStart = now();
 	} else if (!isDownTime && isTimeToSwitchState(heaterStateStart, upTime)) {
-		aSerial.vvv().println("Down time...");
+		aSerial.vvv().println(F("Down time..."));
 		if (state == HEATER_STATE_ON) {
 			// return heater to AUTO state after START
-			aSerial.vvv().println("Heater state set to AUTO");
+			aSerial.vvv().println(F("Heater state set to AUTO"));
 			heaterState = HEATER_STATE_AUTO;
 			state = heaterState;
 		}
@@ -344,17 +334,17 @@ int setHeaterState(int newSwitchState) {
 	int newHeaterState = 0;
 	switch (newSwitchState) {
 	case PIN_SWITCH_START:
-		aSerial.vvv().println("Pin state=START");
+		aSerial.vvv().println(F("Pin state=START"));
 		newHeaterState = HEATER_STATE_ON;
 		heaterStateStart = now();
 		isDownTime = false;
 		break;
 
 	case PIN_SWITCH_AUTO:
-		aSerial.vvv().println("Pin state=AUTO");
+		aSerial.vvv().println(F("Pin state=AUTO"));
 		if (switchState == PIN_SWITCH_START) {
 			// ignore switch from START to AUTO due to spring-loaded switch
-			aSerial.vvv().println("Delayed heater state");
+			aSerial.vvv().println(F("Delayed heater state"));
 			newHeaterState = HEATER_STATE_ON;
 		} else {
 			newHeaterState = HEATER_STATE_AUTO;
@@ -364,7 +354,7 @@ int setHeaterState(int newSwitchState) {
 		break;
 
 	default:
-		aSerial.vvv().println("Pin state=OFF");
+		aSerial.vvv().println(F("Pin state=OFF"));
 		newHeaterState = HEATER_STATE_OFF;
 		heaterStateStart = now();
 		isDownTime = true;
@@ -407,7 +397,7 @@ time_t compileTime() {
 			"JanFebMarAprMayJunJulAugSepOctNovDec";
 	char compMon[3], *m;
 
-	aSerial.v().println("Setting RTC clock");
+	aSerial.v().println(F("Setting RTC clock"));
 
 	strncpy(compMon, compDate, 3);
 	compMon[3] = '\0';
@@ -450,7 +440,7 @@ float readTemperature() {
 	}
 	if (readCount >= ERROR_NAN_COUNT) {
 		// too many read attempts -> probable sensor fault
-		aSerial.v().println("Error: failed to read temperature");
+		aSerial.v().println(F("Error: failed to read temperature"));
 		errorCode = ERROR_NAN;
 		// disable AUTO on
 		return MIN_TEMP_AUTO + 1;
@@ -501,18 +491,18 @@ void handleDebugLed() {
 	case ERROR_STATE: {
 		// blink led in case of error
 		int even = second() % 2;
-		if (even == 0 && millis() > debugLedTimer + 250) {
+		if (even == 0 &&
+				millis() - debugLedStart > 250) {
 			state = HIGH;
-			debugLedTimer = millis();
+			debugLedStart = millis();
 		}
 		break;
 	}
-	default: {
+	default:
 		// led is on first minute of every hour
-		if (minute() < 1) {
+		if (minute() < 1)
 			state = HIGH;
-		}
-	}
+
 	}
 
 	digitalWrite(PIN_LED, state);
