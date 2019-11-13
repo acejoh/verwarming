@@ -24,7 +24,7 @@ const int PIN_RELAY = 8;
 // switch #1 = pin 10
 const int PIN_SWITCH_START = 9;
 const int PIN_SWITCH_AUTO = 10;
-const int PIN_SWITCH_OFF = 1; // not used
+const int PIN_SWITCH_OFF = 0; // not used as pin
 
 const int HEATER_STATE_OFF = 0;
 const int HEATER_STATE_ON = 1;
@@ -59,9 +59,6 @@ const int UP_TIME_SECONDS_OFF = 30 * 60;
 const int UP_TIME_SECONDS_AUTO = 30 * 60;
 const int UP_TIME_SECONDS_ON = 10 * 60;
 
-// smoothing constants
-const int NUM_READINGS = 600;
-
 // debug led constants
 const int ERROR_SENSOR = 1;
 const int ERROR_RTC = 2;
@@ -85,11 +82,6 @@ bool hasDownTimePassed = false;
 unsigned long readSensorStart;
 float temperature = MIN_TEMP_AUTO + 1;
 float humidity = 0;
-
-float tempSmoothingArray[NUM_READINGS];
-unsigned int currentIndex;
-float total;
-float average;
 
 unsigned long debugLogStart;
 int errorCode = 0;
@@ -212,7 +204,6 @@ void loop() {
 
 	// determine if heater should start or not
 	bool startHeater = getStartHeater(heaterState, humidity, temperature);
-	// relay logic
 	if (startHeater)
 		digitalWrite(PIN_RELAY, HIGH);
 	else
@@ -231,7 +222,7 @@ void loop() {
 
 }
 
-bool getStartHeater(int state, float humidity, float temperature) {
+bool getStartHeater(int &state, float humidity, float temperature) {
 	bool start = false;
 
 	int upTime = 0;
@@ -268,7 +259,6 @@ bool getStartHeater(int state, float humidity, float temperature) {
 		if (state == HEATER_STATE_ON) {
 			// return heater to AUTO state after START
 			aSerial.vvv().println(F("Heater state set to AUTO"));
-			heaterState = HEATER_STATE_AUTO;
 			state = heaterState;
 		}
 		isDownTime = true;
@@ -331,7 +321,7 @@ int getSwitchState() {
 
 // Set heater state based on switch
 int setHeaterState(int newSwitchState) {
-	int newHeaterState = 0;
+	int newHeaterState;
 	switch (newSwitchState) {
 	case PIN_SWITCH_START:
 		aSerial.vvv().println(F("Pin state=START"));
@@ -416,7 +406,7 @@ time_t compileTime() {
 }
 
 int addSwitchDelay(int state) {
-	int delay = 0;
+	int delay;
 	switch (state) {
 	case PIN_SWITCH_START:
 		delay = DEBOUNCE_DELAY_START;
@@ -452,28 +442,6 @@ float readTemperature() {
 
 float readHumidity() {
 	return 0;
-}
-
-float getSmoothTemp(float temp) {
-	static float tempArray[NUM_READINGS];
-	static int currentIndex;
-	static float total;
-	static bool completed = false;
-
-	total -= tempArray[currentIndex];
-	tempArray[currentIndex] = temp;
-	total += tempArray[currentIndex];
-
-	currentIndex++;
-	if (currentIndex > NUM_READINGS) {
-		completed = true;
-		currentIndex = 0;
-	}
-
-	if (completed)
-		return total / NUM_READINGS;
-
-	return total / currentIndex;
 }
 
 void resetErrorCode(const int errorToReset) {
