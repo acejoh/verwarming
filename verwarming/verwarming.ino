@@ -37,15 +37,15 @@ Timezone CE(CEST, CET);
 
 const int SATURDAY = 7;
 const int SUNDAY = 1;
-const int DAL_UUR_START = 21;
+const int DAL_UUR_START = 3;
 const int DAL_UUR_END = 6;
 
 // temperature and humidity settings
-const float MIN_TEMP_OFF = 1;
+const float MIN_TEMP_OFF = 1; // Antivorstbeveiliging in AUTO tijdens piekuren
 const float MAX_HUM_OFF = 999;
-const float MIN_TEMP_AUTO = 10;
+const float MIN_TEMP_AUTO = 10; // Onder deze temp, springt verwarming op tijdens daluren
 const float MAX_HUM_AUTO = 999;
-const float MAX_TEMP_START = 20;
+const float MAX_TEMP_START = 20;  // Boven deze temperatuur zal de verwarming nooit aanspringen
 
 // switch debounce and state constants
 const unsigned int DEBOUNCE_DELAY = 50;
@@ -54,10 +54,10 @@ const unsigned int DEBOUNCE_DELAY_AUTO = 750;
 const unsigned int DEBOUNCE_DELAY_OFF = 750;
 
 const int DOWN_TIME_SECONDS_OFF = 30 * 60;
-const int DOWN_TIME_SECONDS_AUTO = 30 * 60;
+const int DOWN_TIME_SECONDS_AUTO = 30 * 60; // Tijd dat de verwarming uit staat in AUTO
 const int UP_TIME_SECONDS_OFF = 30 * 60;
-const int UP_TIME_SECONDS_AUTO = 30 * 60;
-const int UP_TIME_SECONDS_ON = 10 * 60;
+const int UP_TIME_SECONDS_AUTO = 30 * 60; // Tijd dat de verwarming aan staat in AUTO
+const int UP_TIME_SECONDS_ON = 10 * 60; // Tijd dat de verwarming mag aanstaan in HAND
 
 // debug led constants
 const int ERROR_SENSOR = 1;
@@ -362,7 +362,7 @@ bool isNowDalUur() {
 //	return ((dayOfWeek(t) == SATURDAY || dayOfWeek(t) == SUNDAY)
 //			|| (hour(t) >= DAL_UUR_START && hour(t) < DAL_UUR_END));
 
-	return (hour(t) >= DAL_UUR_START || hour(t + UP_TIME_SECONDS_AUTO) < DAL_UUR_END);
+	return (hour(t) >= DAL_UUR_START && hour(t + UP_TIME_SECONDS_AUTO) < DAL_UUR_END);
 
 }
 
