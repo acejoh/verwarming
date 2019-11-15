@@ -11,6 +11,7 @@
 #include <TimeZone.h>
 #include <advancedSerial.h>
 #include <MemoryFree.h>
+#include <avr/wdt.h>
 
 Adafruit_AM2315 sensor;
 
@@ -127,10 +128,13 @@ void setup() {
 	switchState = getSwitchState();
 	heaterState = setHeaterState(switchState);
 
+	wdt_enable(WDTO_8S);
 	aSerial.v().println(F("Setup is done"));
+	aSerial.v().println();
 }
 
 void loop() {
+	wdt_reset();
 
 	// get temperature & humidity from sensor
 	//  update frequency = .5hz
