@@ -224,6 +224,10 @@ void loop() {
 		heaterStateStart = now();
 	}
 
+	// check time status
+	if (errorCode == 0 && timeStatus() != timeSet)
+		errorCode = ERROR_RTC;
+
 	// debug led
 	if (hour() < HOUR_LED_ON_UNTIL && hour() > HOUR_LED_ON_FROM)
 		handleDebugLed();
@@ -368,11 +372,11 @@ int setHeaterState(int newSwitchState) {
 // https://www.engie-electrabel.be/nl/support/faq/energie/meters/daltarief
 bool isNowDalUur() {
 
+	if (errorCode > 0)	// do not start heater in auto mode if in error
+		return false;
+
 	TimeChangeRule *tcr;
 	time_t t = CE.toLocal(now(), &tcr);
-
-//	return ((dayOfWeek(t) == SATURDAY || dayOfWeek(t) == SUNDAY)
-//			|| (hour(t) >= DAL_UUR_START && hour(t) < DAL_UUR_END));
 
 	return (hour(t) >= DAL_UUR_START && hour(t + UP_TIME_SECONDS_AUTO) < DAL_UUR_END);
 
