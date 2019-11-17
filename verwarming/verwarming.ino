@@ -8,7 +8,7 @@
 #include <Adafruit_AM2315.h>
 #include <DS3232RTC.h>      // https://github.com/JChristensen/DS3232RTC
 #include <Time.h>
-#include <TimeZone.h>
+#include <Timezone.h>
 #include <advancedSerial.h>
 #include <MemoryFree.h>
 #include <avr/wdt.h>
@@ -70,6 +70,9 @@ const int ERROR_STATE = 4;
 const int HOUR_LED_ON_UNTIL = 23;
 const int HOUR_LED_ON_FROM = 6;
 
+// time to perform reset of arduino
+const int HOUR_RESET = 1;
+
 
 // variables
 int switchState;
@@ -121,6 +124,7 @@ void setup() {
 	if (timeStatus() != timeSet) {
 		errorCode = ERROR_RTC;
 		aSerial.v().println(F("Error: failed to sync with RTC"));
+		setTime(compileTime());
 	}
 	printDateTime(now());
 
@@ -223,6 +227,10 @@ void loop() {
 	// debug led
 	if (hour() < HOUR_LED_ON_UNTIL && hour() > HOUR_LED_ON_FROM)
 		handleDebugLed();
+
+	// force reset by delaying beyond WDT limit
+	if (hour() == HOUR_RESET && minute() == 0 && second() < 8)
+		delay(10000);
 
 }
 
@@ -455,21 +463,22 @@ void resetErrorCode(const int errorToReset) {
 
 void handleDebugLed() {
 	int state = LOW;
+	int even;
 
 	switch (errorCode) {
 	case ERROR_NAN:
 	case ERROR_RTC:
 	case ERROR_SENSOR:
-	case ERROR_STATE: {
+	case ERROR_STATE:
 		// blink led in case of error
-		int even = second() % 2;
+		even = second() % 2;
 		if (even == 0 &&
 				millis() - debugLedStart > 250) {
 			state = HIGH;
 			debugLedStart = millis();
 		}
 		break;
-	}
+
 	default:
 		// led is on first minute of every hour
 		if (minute() < 1)
