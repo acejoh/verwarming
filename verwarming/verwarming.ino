@@ -238,7 +238,7 @@ void loop() {
 
 }
 
-bool getStartHeater(int &state, float humidity, float temperature) {
+bool getStartHeater(int state, float humidity, float temperature) {
 	bool start = false;
 
 	int upTime = 0;
@@ -275,6 +275,7 @@ bool getStartHeater(int &state, float humidity, float temperature) {
 		if (state == HEATER_STATE_ON) {
 			// return heater to AUTO state after START
 			aSerial.vvv().println(F("Heater state set to AUTO"));
+			heaterState = HEATER_STATE_AUTO;
 			state = heaterState;
 		}
 		isDownTime = true;
