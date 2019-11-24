@@ -153,7 +153,7 @@ void loop() {
 	if (millis() - debugLogStart > 5000) {
 		printDateTime(now());
 		if (isNowDalUur())
-			aSerial.vvv().println(F("Daluur"));
+			aSerial.vvv().println(F(" - Daluur"));
 
 		aSerial.vvv().print(F("Temp: ")).println(temperature);
 
@@ -181,6 +181,9 @@ void loop() {
 		time_t running = now() - heaterStateStart;
 		aSerial.vvv().print(F(" - runtime: ")).print(minute(running)).print(':').println(
 				second(running));
+
+		if (checkAutoStartCondition())
+			aSerial.vvv().println("AUTO start condition met (if uptime)");
 
 		aSerial.vvv().print(F("Free RAM: ")).println(freeMemory());
 
@@ -297,9 +300,7 @@ bool getStartHeater(int state, float humidity, float temperature) {
 		break;
 
 	case HEATER_STATE_AUTO:
-		start = ((temperature < MIN_TEMP_AUTO || humidity > MAX_HUM_AUTO)
-				&& isNowDalUur()) ||
-				(temperature < MIN_TEMP_OFF || humidity > MAX_HUM_OFF);
+		start = checkAutoStartCondition();
 		break;
 
 	default:
@@ -370,17 +371,24 @@ int setHeaterState(int newSwitchState) {
 	return newHeaterState;
 }
 
-// https://www.engie-electrabel.be/nl/support/faq/energie/meters/daltarief
-bool isNowDalUur() {
-
-	if (errorCode > 0)	// do not start heater in auto mode if in error
+bool checkAutoStartCondition() {
+	if (errorCode > 0)
 		return false;
 
+	return ((temperature < MIN_TEMP_AUTO || humidity > MAX_HUM_AUTO)
+			&& isNowDalUur())
+			|| (temperature < MIN_TEMP_OFF || humidity > MAX_HUM_OFF);
+}
+
+// https://www.engie-electrabel.be/nl/support/faq/energie/meters/daltarief
+bool isNowDalUur() {
 	TimeChangeRule *tcr;
 	time_t t = CE.toLocal(now(), &tcr);
 
-	return (hour(t) >= DAL_UUR_START && hour(t + UP_TIME_SECONDS_AUTO) < DAL_UUR_END);
+	if (isPM(t))
+		return false;
 
+	return (hour(t) >= DAL_UUR_START && hour(t + UP_TIME_SECONDS_AUTO) < DAL_UUR_END);
 }
 
 // given a Timezone object, UTC and a string description, convert and print local time with time zone
