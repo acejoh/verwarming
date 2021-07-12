@@ -1,7 +1,21 @@
+// **
+// ** CONNECTIONS **
+// **
+// ** AM2315 **
 // Connect RED of the AM2315 sensor to 5.0V
 // Connect BLACK to Ground
-// Connect WHITE to i2c clock - on '168/'328 Arduino Uno/Duemilanove/etc thats Analog 5
-// Connect YELLOW to i2c data - on '168/'328 Arduino Uno/Duemilanove/etc thats Analog 4
+// Connect WHITE to i2c clock (SCL) - on '168/'328 Arduino Uno/Duemilanove/etc thats Analog 5
+// Connect YELLOW to i2c data (SDA) - on '168/'328 Arduino Uno/Duemilanove/etc thats Analog 4
+
+// ** ESPLINK **
+// The recommended connections for an esp-01 module are:
+// URXD: connect to TX of microcontroller
+// UTXD: connect to RX of microcontroller
+// GPIO0: connect to RESET of microcontroller
+// GPIO2: optionally connect green LED to 3.3V (indicates wifi status)
+
+// NOTE: in case of errors while sending the program to the Arduino, disconnect the ESP8266 before recompiling
+// typical error: avrdude: stk500_getsync() attempt 1 of 10: not in sync: resp=0x00
 
 // Include the libraries we need
 #include <Wire.h>
@@ -12,6 +26,18 @@
 #include <advancedSerial.h>
 #include <MemoryFree.h>
 #include <avr/wdt.h>
+
+#include <ELClient.h>
+#include <ELClientRest.h>
+
+// Initialize a connection to esp-link using the normal hardware serial port both for
+// SLIP and for debug messages.
+ELClient esp(&Serial, &Serial);
+
+// Initialize a REST client on the connection to esp-link
+ELClientRest rest(&esp);
+
+boolean wifiConnected = false;
 
 Adafruit_AM2315 sensor;
 
@@ -44,9 +70,9 @@ const int DAL_UUR_END = 6;
 // temperature and humidity settings
 const float MIN_TEMP_OFF = 1; // Antivorstbeveiliging in AUTO tijdens piekuren
 const float MAX_HUM_OFF = 999;
-const float MIN_TEMP_AUTO = 10; // Onder deze temp, springt verwarming op tijdens daluren
+const float MIN_TEMP_AUTO = 30; // Onder deze temp springt verwarming op tijdens daluren
 const float MAX_HUM_AUTO = 999;
-const float MAX_TEMP_START = 20;  // Boven deze temperatuur zal de verwarming nooit aanspringen
+const float MAX_TEMP_START = 99; // Boven deze temperatuur zal de verwarming nooit aanspringen
 
 // switch debounce and state constants
 const unsigned int DEBOUNCE_DELAY = 50;
@@ -64,21 +90,27 @@ const int UP_TIME_SECONDS_ON = 10 * 60; // Tijd dat de verwarming mag aanstaan i
 const int ERROR_SENSOR = 1;
 const int ERROR_RTC = 2;
 const int ERROR_NAN = 3;
-const int ERROR_NAN_COUNT = 99;
+const int ERROR_NAN_COUNT = 99;	// number of NAN returns from sensor before turning on ERROR_NAN
 const int ERROR_STATE = 4;
+const int ERROR_WIFI = 5;
+const int ERROR_ESP = 6;
+const int ERROR_DNS = 7;
 
+// only turn on debug led during daytime
 const int HOUR_LED_ON_UNTIL = 23;
 const int HOUR_LED_ON_FROM = 6;
 
 // time to perform reset of arduino
-const int HOUR_RESET = 1;
-
+const int HOUR_RESET = 99;
 
 // variables
 int switchState;
 int heaterState;
 
+time_t programStart;
+time_t errorStart;
 time_t heaterStateStart;
+time_t heaterCycleStart;
 bool isDownTime = false;
 bool hasStarted = false;
 bool hasDownTimePassed = false;
@@ -89,8 +121,28 @@ float humidity = 0;
 
 unsigned long debugLogStart;
 int errorCode = 0;
-unsigned long debugLedStart;
+unsigned long updateDnsStart;
 
+// Callback made from esp-link to notify of wifi status changes
+// Here we print something out and set a global flag
+void wifiCb(void *response) {
+	ELClientResponse *res = (ELClientResponse*) response;
+	if (res->argc() == 1) {
+		uint8_t status;
+		res->popArg(&status, 1);
+
+		if (status == STATION_GOT_IP) {
+			aSerial.v().println(F("WIFI CONNECTED"));
+			wifiConnected = true;
+			resetErrorCode(ERROR_WIFI);
+		} else {
+			aSerial.v().print(F("WIFI NOT READY: "));
+			aSerial.v().println(status);
+			wifiConnected = false;
+			setErrorCode(ERROR_WIFI);
+		}
+	}
+}
 
 void setup() {
 	// init pins
@@ -103,26 +155,26 @@ void setup() {
 	pinMode(PIN_SWITCH_START, INPUT_PULLUP);
 	pinMode(PIN_SWITCH_AUTO, INPUT_PULLUP);
 
-	Serial.begin(9600);
+	Serial.begin(115200); // the baud rate here needs to match the esp-link config
 	aSerial.setPrinter(Serial);
 	aSerial.setFilter(Level::vvv);
 	/* Uncomment the following line to disable the output. By default the ouput is on. */
 	// aSerial.off();
-
-	aSerial.v().println(F("Verwarming start"));
-	aSerial.v().println(F("================"));
+	aSerial.v().println(F("Verwarming 1.0"));
+	aSerial.v().println(F("=============="));
 
 	// Start the temperature sensor
 	if (!sensor.begin()) {
-		errorCode = ERROR_SENSOR;
-		aSerial.v().println(F("Error: Sensor not found, check wiring & pullups"));
+		setErrorCode(ERROR_SENSOR);
+		aSerial.v().println(
+				F("Error: Sensor not found, check wiring & pullups"));
 	}
 
 	// set/get the RTC time
 	//RTC.set(compileTime());	// COMMENT THIS LINE ONCE IN PRODUCTION
 	setSyncProvider(RTC.get);   // the function to get the time from the RTC
 	if (timeStatus() != timeSet) {
-		errorCode = ERROR_RTC;
+		setErrorCode(ERROR_RTC);
 		aSerial.v().println(F("Error: failed to sync with RTC"));
 		setTime(compileTime());
 	}
@@ -132,6 +184,30 @@ void setup() {
 	switchState = getSwitchState();
 	heaterState = setHeaterState(switchState);
 
+	// Sync-up with esp-link, this is required at the start of any sketch and initializes the
+	// callbacks to the wifi status change callback. The callback gets called with the initial
+	// status right after Sync() below completes.
+	esp.wifiCb.attach(wifiCb); // wifi status change callback, optional (delete if not desired)
+	bool ok = esp.Sync();   // sync up with esp-link, blocks for up to 2 seconds
+	if (!ok) {
+		aSerial.v().println(F("EL-Client sync failed!"));
+		setErrorCode(ERROR_ESP);
+	} else {
+		aSerial.v().println(F("EL-Client synced!"));
+		setErrorCode(ERROR_WIFI);	// set WIFI errorcode until WIFI connected callback has been processed
+	}
+
+	// Set up the REST client to talk to www.duckdns.org, this doesn't connect to that server,
+	// it just sets-up stuff on the esp-link side
+	int err = rest.begin("www.duckdns.org");
+	if (err != 0) {
+		aSerial.v().print(F("REST begin failed: "));
+		aSerial.v().println(err);
+		setErrorCode(ERROR_DNS);
+	}
+
+	programStart = now();
+
 	wdt_enable(WDTO_8S);
 	aSerial.v().println(F("Setup is done"));
 	aSerial.v().println();
@@ -139,6 +215,9 @@ void setup() {
 
 void loop() {
 	wdt_reset();
+
+	// process any callbacks coming from esp_link
+	esp.Process();
 
 	// get temperature & humidity from sensor
 	//  update frequency = .5hz
@@ -150,47 +229,76 @@ void loop() {
 	}
 
 	// debug log
-	if (millis() - debugLogStart > 5000) {
+	if (millis() - debugLogStart > 60000) {
 		printDateTime(now());
 		if (isNowDalUur())
-			aSerial.vvv().println(F(" - Daluur"));
+			aSerial.vvv().println(F(" - Daluur!"));
+		printElapsedTime(programStart);
 
-		aSerial.vvv().print(F("Temp: ")).println(temperature);
+		aSerial.v().print(F("Temperature: ")).println(temperature);
 
-		aSerial.vvv().print(F("Current heater state: "));
-		switch(heaterState) {
+		if (hasStarted)
+			aSerial.vv().println("Heater is ON!");
+
+		aSerial.vv().print(F("Current heater state: "));
+		switch (heaterState) {
 		case HEATER_STATE_AUTO:
-			aSerial.vvv().println(F("AUTO"));
+			aSerial.vv().println(F("AUTO"));
+			if (checkAutoStartCondition())
+				aSerial.vvv().println(F(" - Start condition met!"));
 			break;
 		case HEATER_STATE_OFF:
-			aSerial.vvv().println(F("OFF"));
+			aSerial.vv().println(F("OFF"));
 			break;
 		case HEATER_STATE_ON:
-			aSerial.vvv().println(F("ON"));
+			aSerial.vv().println(F("ON"));
 			break;
 		default:
-			aSerial.vvv().println(F("UNDEFINED"));
+			aSerial.vv().println(F("UNDEFINED"));
 		}
+		printElapsedTime(heaterStateStart);
 
 		aSerial.vvv().print(F("Current cycle: "));
 		if (isDownTime)
 			aSerial.vvv().println(F("DOWN"));
 		else
 			aSerial.vvv().println(F("UP"));
+		printElapsedTime(heaterCycleStart);
 
-		time_t running = now() - heaterStateStart;
-		aSerial.vvv().print(F(" - runtime: ")).print(minute(running)).print(':').println(
-				second(running));
-
-		if (checkAutoStartCondition())
-			aSerial.vvv().println("AUTO start condition met (if uptime)");
+		if (errorCode > 0) {
+			aSerial.v().print(F("ERRORCODE = "));
+			switch (errorCode) {
+			case ERROR_NAN:
+				aSerial.v().println(F("ERROR_NAN"));
+				break;
+			case ERROR_RTC:
+				aSerial.v().println(F("ERROR_RTC"));
+				break;
+			case ERROR_SENSOR:
+				aSerial.v().println(F("ERROR_SENSOR"));
+				break;
+			case ERROR_STATE:
+				aSerial.v().println(F("ERROR_STATE"));
+				break;
+			case ERROR_WIFI:
+				aSerial.v().println(F("ERROR_WIFI"));
+				break;
+			case ERROR_ESP:
+				aSerial.v().println(F("ERROR_ESP"));
+				break;
+			case ERROR_DNS:
+				aSerial.v().println(F("ERROR_DNS"));
+				break;
+			default:
+				aSerial.v().println(F("UNDEFINED"));
+			}
+			printElapsedTime(errorStart);
+		}
 
 		aSerial.vvv().print(F("Free RAM: ")).println(freeMemory());
-
-		aSerial.vvv().println();
+		aSerial.v().println();
 		debugLogStart = millis();
 	}
-
 
 	// check for switch state changes
 	// 1. Debounce
@@ -222,14 +330,21 @@ void loop() {
 
 	if (hasStarted != startHeater) {
 		aSerial.vvv().println(F("Heater state change"));
-		aSerial.vvv().print(F("Current temp: ")).println(temperature);
+		aSerial.vvv().print(F(" - Current temp: ")).println(temperature);
 		hasStarted = startHeater;
-		heaterStateStart = now();
+		heaterCycleStart = now();
+	}
+
+	// update duckdns if connected
+	if (wifiConnected && millis() - updateDnsStart > 5 * 60000) {
+		// Update duckdns domain 'opwarming' using our token
+		rest.get("/update/opwarming/c1761e12-d524-4c17-b65b-737b1d620163");
+		updateDnsStart = millis();
 	}
 
 	// check time status
-	if (errorCode == 0 && timeStatus() != timeSet)
-		errorCode = ERROR_RTC;
+	if (timeStatus() != timeSet)
+		setErrorCode(ERROR_RTC);
 
 	// debug led
 	if (hour() < HOUR_LED_ON_UNTIL && hour() > HOUR_LED_ON_FROM)
@@ -268,21 +383,21 @@ bool getStartHeater(int state, float humidity, float temperature) {
 
 	// heater should not run constantly ->
 	//  for every x seconds it runs it should stop y seconds
-	if (isDownTime && isTimeToSwitchState(heaterStateStart, downTime)) {
+	if (isDownTime && isTimeToSwitchState(heaterCycleStart, downTime)) {
 		aSerial.vvv().println(F("Up time..."));
 		isDownTime = false;
 		hasDownTimePassed = true;
-		heaterStateStart = now();
-	} else if (!isDownTime && isTimeToSwitchState(heaterStateStart, upTime)) {
+		heaterCycleStart = now();
+	} else if (!isDownTime && isTimeToSwitchState(heaterCycleStart, upTime)) {
 		aSerial.vvv().println(F("Down time..."));
 		if (state == HEATER_STATE_ON) {
 			// return heater to AUTO state after START
-			aSerial.vvv().println(F("Heater state set to AUTO"));
+			aSerial.vvv().println(F(" - Heater state set to AUTO"));
 			heaterState = HEATER_STATE_AUTO;
 			state = heaterState;
 		}
 		isDownTime = true;
-		heaterStateStart = now();
+		heaterCycleStart = now();
 	}
 
 	// if down time -> do not start heater
@@ -344,6 +459,7 @@ int setHeaterState(int newSwitchState) {
 	case PIN_SWITCH_START:
 		aSerial.vvv().println(F("Pin state=START"));
 		newHeaterState = HEATER_STATE_ON;
+		heaterCycleStart = now();
 		heaterStateStart = now();
 		isDownTime = false;
 		break;
@@ -352,10 +468,11 @@ int setHeaterState(int newSwitchState) {
 		aSerial.vvv().println(F("Pin state=AUTO"));
 		if (switchState == PIN_SWITCH_START) {
 			// ignore switch from START to AUTO due to spring-loaded switch
-			aSerial.vvv().println(F("Delayed heater state"));
+			aSerial.vvv().println(F(" - Delayed heater state"));
 			newHeaterState = HEATER_STATE_ON;
 		} else {
 			newHeaterState = HEATER_STATE_AUTO;
+			heaterCycleStart = now();
 			heaterStateStart = now();
 			isDownTime = true;	// do not start heater at once
 		}
@@ -364,6 +481,7 @@ int setHeaterState(int newSwitchState) {
 	default:
 		aSerial.vvv().println(F("Pin state=OFF"));
 		newHeaterState = HEATER_STATE_OFF;
+		heaterCycleStart = now();
 		heaterStateStart = now();
 		isDownTime = true;
 	}
@@ -372,9 +490,6 @@ int setHeaterState(int newSwitchState) {
 }
 
 bool checkAutoStartCondition() {
-	if (errorCode > 0)
-		return false;
-
 	return ((temperature < MIN_TEMP_AUTO || humidity > MAX_HUM_AUTO)
 			&& isNowDalUur())
 			|| (temperature < MIN_TEMP_OFF || humidity > MAX_HUM_OFF);
@@ -388,7 +503,8 @@ bool isNowDalUur() {
 	if (isPM(t))
 		return false;
 
-	return (hour(t) >= DAL_UUR_START && hour(t + UP_TIME_SECONDS_AUTO) < DAL_UUR_END);
+	return (hour(t) >= DAL_UUR_START
+			&& hour(t + UP_TIME_SECONDS_AUTO) < DAL_UUR_END);
 }
 
 // given a Timezone object, UTC and a string description, convert and print local time with time zone
@@ -405,9 +521,32 @@ void printDateTime(time_t dateTime) {
 	aSerial.v().println(buf);
 }
 
+// prints the duration in days, hours, minutes and seconds
+void printElapsedTime(time_t start) {
+	time_t duration = now() - start;
+	aSerial.vvv().print(F(" - runtime: "));
+	if (duration >= SECS_PER_DAY) {
+		aSerial.vvv().print(duration / SECS_PER_DAY);
+		aSerial.vvv().print(F(" day(s) "));
+		duration = duration % SECS_PER_DAY;
+	}
+	if (duration >= SECS_PER_HOUR) {
+		aSerial.vvv().print(duration / SECS_PER_HOUR);
+		aSerial.vvv().print(F(" hour(s) "));
+		duration = duration % SECS_PER_HOUR;
+	}
+	if (duration >= SECS_PER_MIN) {
+		aSerial.vvv().print(duration / SECS_PER_MIN);
+		aSerial.vvv().print(F(" minute(s) "));
+		duration = duration % SECS_PER_MIN;
+	}
+	aSerial.vvv().print(duration);
+	aSerial.vvv().println(F(" second(s) "));
+}
+
 // function to return the compile date and time as a time_t value
 time_t compileTime() {
-	const time_t FUDGE(10); //fudge factor to allow for upload time, etc. (seconds, YMMV)
+	const time_t FUDGE(20); //fudge factor to allow for upload time, etc. (seconds, YMMV)
 	const char *compDate = __DATE__, *compTime = __TIME__, *months =
 			"JanFebMarAprMayJunJulAugSepOctNovDec";
 	char compMon[3], *m;
@@ -456,7 +595,7 @@ float readTemperature() {
 	if (readCount >= ERROR_NAN_COUNT) {
 		// too many read attempts -> probable sensor fault
 		aSerial.v().println(F("Error: failed to read temperature"));
-		errorCode = ERROR_NAN;
+		setErrorCode(ERROR_NAN);
 		// disable AUTO on
 		return MIN_TEMP_AUTO + 1;
 	}
@@ -469,6 +608,13 @@ float readHumidity() {
 	return 0;
 }
 
+void setErrorCode(const int errorToSet) {
+	if (errorCode == 0) {
+		errorCode = errorToSet;
+		errorStart = now();
+	}
+}
+
 void resetErrorCode(const int errorToReset) {
 	if (errorCode == errorToReset)
 		errorCode = 0;
@@ -476,26 +622,15 @@ void resetErrorCode(const int errorToReset) {
 
 void handleDebugLed() {
 	int state = LOW;
-	int even;
 
 	switch (errorCode) {
 	case ERROR_NAN:
 	case ERROR_RTC:
 	case ERROR_SENSOR:
 	case ERROR_STATE:
-		// blink led in case of error
-		even = second() % 2;
-		if (even == 0 &&
-				millis() - debugLedStart > 250) {
-			state = HIGH;
-			debugLedStart = millis();
-		}
+	case ERROR_WIFI:
+		state = HIGH;
 		break;
-
-	default:
-		// led is on first minute of every hour
-		if (minute() < 1)
-			state = HIGH;
 
 	}
 
